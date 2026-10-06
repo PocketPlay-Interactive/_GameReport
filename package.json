@@ -1,0 +1,16 @@
+{
+  "name": "com.dann.gamereport",
+  "version": "1.0.0",
+  "displayName": "Game Report",
+  "description": "Inspect asset sizes and output contents from the latest Unity build.",
+  "unity": "2021.3",
+  "author": {
+    "name": "Dann"
+  },
+  "keywords": [
+    "build",
+    "report",
+    "size",
+    "editor"
+  ]
+}
