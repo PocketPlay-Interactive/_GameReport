@@ -2,15 +2,23 @@
   "name": "com.dann.gamereport",
   "version": "1.0.0",
   "displayName": "Game Report",
-  "description": "Inspect asset sizes and output contents from the latest Unity build.",
+  "description": "Unity Editor tool for inspecting build output, asset sizes, file groups, and APK, AAB, or IPA composition.",
   "unity": "2021.3",
+  "hideInEditor": false,
+  "documentationUrl": "https://github.com/PocketPlay-Interactive/_GameReport/blob/main/README.md",
+  "changelogUrl": "https://github.com/PocketPlay-Interactive/_GameReport/blob/main/CHANGELOG.md",
+  "licensesUrl": "https://github.com/PocketPlay-Interactive/_GameReport/blob/main/LICENSE.md",
   "author": {
-    "name": "Dann"
+    "name": "DannOfficial",
+    "email": "trinhvanbo87@gmail.com",
+    "url": "https://github.com/PocketPlay-Interactive"
   },
   "keywords": [
+    "unity",
     "build",
     "report",
     "size",
+    "assets",
     "editor"
   ]
 }
