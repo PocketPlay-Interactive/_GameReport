@@ -23,7 +23,7 @@ file:E:/GitHub/_GameReport
 ## Use
 
 1. Build the Unity project once.
-2. Open **Tools > Build Report**.
+2. Open **Build Report** from Unity's main menu.
 3. Review:
    - **Summary**: build details, output composition, asset-type totals, largest assets.
    - **Files**: search, filter, sort, and select included assets.

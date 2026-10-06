@@ -131,7 +131,7 @@ public class BuildReportWindow : EditorWindow
     private float RowHeight => EditorGUIUtility.singleLineHeight + 2f;
     private long ThresholdBytes => (long)(_thresholdKB * 1024f);
 
-    [MenuItem("Tools/Build Report")]
+    [MenuItem("Build Report")]
     public static void Open()
     {
         BuildReportWindow window = GetWindow<BuildReportWindow>("Build Report");
