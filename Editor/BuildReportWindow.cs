@@ -43,7 +43,6 @@ public class BuildReportWindow : EditorWindow
         public long outputFileSize = -1;
         public List<OutputPart> outputParts = new List<OutputPart>();
         public long packedTotal;
-        public bool hasSceneInfo;
         public string assetsBuiltAt; // differs from buildEndedAt when the asset list was carried over from an older build
         public List<CategoryEntry> categories = new List<CategoryEntry>();
         public List<FileEntry> files = new List<FileEntry>();
@@ -74,7 +73,6 @@ public class BuildReportWindow : EditorWindow
         public string extension;
         public string assetType;
         public long largestPart;
-        public string[] scenes = Array.Empty<string>();
     }
 
     private class GroupRow
@@ -84,18 +82,18 @@ public class BuildReportWindow : EditorWindow
         public long bytes;
     }
 
-    private enum FileSort { Size, Extension, AssetType, Path }
+    private enum FileSort { Size, AssetType, Path }
 
     private const int CacheVersion = 1;
     // One report per platform: Library/BuildReportWindow/<platform>.json
     private const string CacheDirectory = "Library/BuildReportWindow";
-    private const int MaxDetailScenes = 8;
-    private const string ThresholdPrefKey = "BuildReportWindow.ThresholdKB";
-    private const string AllTypes = "All types";
     private const double AutoRefreshInterval = 2d;
     private const float SelectButtonWidth = 56f;
+    private const long HeavyThresholdBytes = 500L * 1024;
+    private const int FolderDepth = 2;
+    private const int TopCount = 10;
     private static readonly string[] TabNames = { "Summary", "Files", "Groups" };
-    private static readonly string[] GroupModeNames = { "By folder", "By extension", "By asset type" };
+    private static readonly string[] GroupModeNames = { "By folder", "By asset type" };
 
     private static readonly Color HeavyColor = new Color(0.95f, 0.3f, 0.2f, 0.22f);
     private static readonly Color SelectedColor = new Color(0.24f, 0.48f, 0.9f, 0.35f);
@@ -110,17 +108,12 @@ public class BuildReportWindow : EditorWindow
     private string[] _platformNames = Array.Empty<string>();
     private string _newestFile;
     private DateTime _newestWrite;
-    private FileEntry _detail; // snapshot of the selected asset taken on Layout so IMGUI control counts stay stable
     private string _status;
     private int _tab;
-    private float _thresholdKB;
     private string _selectedPath;
 
     // Files tab
     private string _search = string.Empty;
-    private string[] _typeOptions = { AllTypes };
-    private int _typeIndex;
-    private bool _onlyHeavy;
     private FileSort _sort = FileSort.Size;
     private bool _sortAscending;
     private List<FileEntry> _filteredFiles = new List<FileEntry>();
@@ -130,7 +123,6 @@ public class BuildReportWindow : EditorWindow
 
     // Groups tab
     private int _groupMode;
-    private int _folderDepth = 2;
     private List<GroupRow> _groups = new List<GroupRow>();
     private bool _groupsDirty = true;
     private Vector2 _groupScroll;
@@ -138,19 +130,17 @@ public class BuildReportWindow : EditorWindow
     private Vector2 _summaryScroll;
 
     private float RowHeight => EditorGUIUtility.singleLineHeight + 2f;
-    private long ThresholdBytes => (long)(_thresholdKB * 1024f);
 
     [MenuItem("GameFoundation/Build Report")]
     public static void Open()
     {
         BuildReportWindow window = GetWindow<BuildReportWindow>("Build Report");
-        window.minSize = new Vector2(780f, 360f);
+        window.minSize = new Vector2(560f, 360f);
         window.Show();
     }
 
     private void OnEnable()
     {
-        _thresholdKB = EditorPrefs.GetFloat(ThresholdPrefKey, 500f);
         Refresh();
     }
 
@@ -209,11 +199,6 @@ public class BuildReportWindow : EditorWindow
             _status = "Failed to read build report: " + e.Message;
         }
 
-        if (_report != null)
-        {
-            _typeOptions = new[] { AllTypes }.Concat(_report.files.Select(f => f.extension).Distinct().OrderBy(e => e)).ToArray();
-            _typeIndex = Mathf.Clamp(_typeIndex, 0, _typeOptions.Length - 1);
-        }
         _filesDirty = true;
         _groupsDirty = true;
         Repaint();
@@ -255,7 +240,6 @@ public class BuildReportWindow : EditorWindow
                     data.files = previous.files;
                     data.categories = previous.categories;
                     data.packedTotal = previous.packedTotal;
-                    data.hasSceneInfo = previous.hasSceneInfo;
                     data.assetsBuiltAt = string.IsNullOrEmpty(previous.assetsBuiltAt) ? previous.buildEndedAt : previous.assetsBuiltAt;
                 }
             }
@@ -325,23 +309,6 @@ public class BuildReportWindow : EditorWindow
                 {
                     entry.largestPart = size;
                     entry.assetType = typeName;
-                }
-            }
-        }
-
-        // Only filled when the build used BuildOptions.DetailedBuildReport; scenePaths are shown as Unity returns them
-        ScenesUsingAssets[] usage = report.scenesUsingAssets;
-        data.hasSceneInfo = usage != null && usage.Length > 0;
-        if (data.hasSceneInfo)
-        {
-            foreach (ScenesUsingAssets set in usage)
-            {
-                foreach (ScenesUsingAsset item in set.list)
-                {
-                    if (files.TryGetValue(item.assetPath, out FileEntry entry))
-                    {
-                        entry.scenes = item.scenePaths;
-                    }
                 }
             }
         }
@@ -514,12 +481,6 @@ public class BuildReportWindow : EditorWindow
             return;
         }
 
-        // Only change the control set on Layout so Layout and Repaint see the same panel
-        if (Event.current.type == EventType.Layout)
-        {
-            _detail = string.IsNullOrEmpty(_selectedPath) ? null : _report.files.Find(f => f.path == _selectedPath);
-        }
-
         _tab = GUILayout.Toolbar(_tab, TabNames);
         switch (_tab)
         {
@@ -527,52 +488,12 @@ public class BuildReportWindow : EditorWindow
             case 1: DrawFilesTab(); break;
             case 2: DrawGroupTab(); break;
         }
-        if (_detail != null && _tab != 2)
-        {
-            DrawDetail(_detail);
-        }
-    }
-
-    // Why the selected asset is in the build: the scenes that reference it
-    private void DrawDetail(FileEntry file)
-    {
-        EditorGUILayout.BeginVertical(EditorStyles.helpBox);
-        EditorGUILayout.LabelField(file.path, EditorStyles.boldLabel);
-        if (!_report.hasSceneInfo)
-        {
-            EditorGUILayout.LabelField("No scene info in this build. Build with BuildOptions.DetailedBuildReport to see which scenes use an asset.", EditorStyles.wordWrappedMiniLabel);
-        }
-        else if (file.scenes.Length == 0)
-        {
-            EditorGUILayout.LabelField("No scene reference recorded for this asset.", EditorStyles.wordWrappedMiniLabel);
-        }
-        else
-        {
-            EditorGUILayout.LabelField($"Referenced by {file.scenes.Length} scene(s):", EditorStyles.miniLabel);
-            for (int i = 0; i < Mathf.Min(file.scenes.Length, MaxDetailScenes); i++)
-            {
-                EditorGUILayout.LabelField(file.scenes[i], EditorStyles.miniLabel);
-            }
-            if (file.scenes.Length > MaxDetailScenes)
-            {
-                EditorGUILayout.LabelField($"... and {file.scenes.Length - MaxDetailScenes} more", EditorStyles.miniLabel);
-            }
-        }
-        EditorGUILayout.EndVertical();
     }
 
     private void DrawToolbar()
     {
         EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
-        bool reload = false;
-        if (GUILayout.Button("Refresh", EditorStyles.toolbarButton, GUILayout.Width(60f)))
-        {
-            reload = true;
-        }
-        if (GUILayout.Button("Show Report File", EditorStyles.toolbarButton, GUILayout.Width(110f)) && _platform != null && File.Exists(GetReportPath(_platform)))
-        {
-            EditorUtility.RevealInFinder(GetReportPath(_platform));
-        }
+        bool reload = GUILayout.Button("Refresh", EditorStyles.toolbarButton, GUILayout.Width(60f));
         if (_platformNames.Length > 1)
         {
             EditorGUI.BeginChangeCheck();
@@ -584,15 +505,6 @@ public class BuildReportWindow : EditorWindow
             }
         }
         GUILayout.FlexibleSpace();
-        GUILayout.Label("Heavy threshold (KB)", EditorStyles.miniLabel);
-        EditorGUI.BeginChangeCheck();
-        float threshold = EditorGUILayout.DelayedFloatField(_thresholdKB, EditorStyles.toolbarTextField, GUILayout.Width(60f));
-        if (EditorGUI.EndChangeCheck())
-        {
-            _thresholdKB = Mathf.Max(0f, threshold);
-            EditorPrefs.SetFloat(ThresholdPrefKey, _thresholdKB);
-            _filesDirty = true;
-        }
         EditorGUILayout.EndHorizontal();
 
         if (reload)
@@ -602,43 +514,24 @@ public class BuildReportWindow : EditorWindow
         }
     }
 
-    private float SceneColumnWidth => _report.hasSceneInfo ? 45f : 0f;
-
     private void DrawSummaryTab()
     {
         _summaryScroll = EditorGUILayout.BeginScrollView(_summaryScroll);
-
-        List<FileEntry> heavy = _report.files.Where(f => f.bytes >= ThresholdBytes).ToList();
-
         EditorGUILayout.Space();
-        EditorGUILayout.LabelField("Last Build", EditorStyles.boldLabel);
-        if (!string.IsNullOrEmpty(_report.assetsBuiltAt) && _report.assetsBuiltAt != _report.buildEndedAt)
+
+        if (_report.files.Count == 0)
         {
-            EditorGUILayout.HelpBox(
-                "Unity reported no packed assets for this build (usually an incremental build). " +
-                "The asset list below is from the build finished at " + _report.assetsBuiltAt + ". " +
-                "Run a clean build to refresh it.",
-                MessageType.Warning);
+            EditorGUILayout.HelpBox("Unity returned no asset list for this build. Run a clean build.", MessageType.Warning);
         }
-        else if (_report.files.Count == 0)
+        else if (!string.IsNullOrEmpty(_report.assetsBuiltAt) && _report.assetsBuiltAt != _report.buildEndedAt)
         {
-            EditorGUILayout.HelpBox(
-                "Unity reported no packed assets for this build (usually an incremental build). " +
-                "Run a clean build to see the asset list.",
-                MessageType.Warning);
+            EditorGUILayout.HelpBox("Asset list is from the build finished at " + _report.assetsBuiltAt + ". Run a clean build to refresh it.", MessageType.Warning);
         }
+
         EditorGUILayout.LabelField("Platform", _report.platform);
-        EditorGUILayout.LabelField("Result", _report.result);
         EditorGUILayout.LabelField("Finished at", _report.buildEndedAt);
-        EditorGUILayout.LabelField("Build time", TimeSpan.FromTicks(_report.totalTimeTicks).ToString(@"hh\:mm\:ss"));
-        EditorGUILayout.SelectableLabel("Output: " + _report.outputPath, GUILayout.Height(EditorGUIUtility.singleLineHeight));
-        EditorGUILayout.LabelField("Output file size (on disk)",
-            _report.outputFileSize >= 0 ? FormatBytes(_report.outputFileSize) : "(file not found)");
-        EditorGUILayout.LabelField("Unity assets (uncompressed)", FormatBytes(_report.packedTotal));
-        EditorGUILayout.LabelField("Asset count", _report.files.Count.ToString());
-        EditorGUILayout.LabelField(
-            $"Assets >= {_thresholdKB:0.#} KB",
-            $"{heavy.Count} assets · {FormatBytes(heavy.Sum(f => f.bytes))}");
+        EditorGUILayout.LabelField("Output size", _report.outputFileSize >= 0 ? FormatBytes(_report.outputFileSize) : "(file not found)");
+        EditorGUILayout.LabelField("Assets (uncompressed)", $"{FormatBytes(_report.packedTotal)} · {_report.files.Count} files");
 
         if (_report.outputParts.Count > 0)
         {
@@ -646,27 +539,22 @@ public class BuildReportWindow : EditorWindow
         }
 
         EditorGUILayout.Space();
-        EditorGUILayout.LabelField("Size by Asset Type (uncompressed)", EditorStyles.boldLabel);
+        EditorGUILayout.LabelField("Size by Asset Type", EditorStyles.boldLabel);
         foreach (CategoryEntry category in _report.categories)
         {
             Rect row = GUILayoutUtility.GetRect(0f, RowHeight, GUILayout.ExpandWidth(true));
-            float x = row.x;
-            GUI.Label(new Rect(x, row.y, 160f, row.height), category.name);
-            x += 160f;
-            GUI.Label(new Rect(x, row.y, 80f, row.height), FormatBytes(category.bytes));
-            x += 80f;
-            GUI.Label(new Rect(x, row.y, 55f, row.height), FormatPercent(category.percent));
-            x += 60f;
-            DrawBar(new Rect(x, row.y + 3f, Mathf.Max(0f, row.xMax - x - 4f), row.height - 6f), category.percent / 100f);
+            GUI.Label(new Rect(row.x, row.y, 160f, row.height), category.name);
+            GUI.Label(new Rect(row.x + 160f, row.y, 80f, row.height), FormatBytes(category.bytes));
+            GUI.Label(new Rect(row.x + 240f, row.y, 55f, row.height), FormatPercent(category.percent));
+            DrawBar(new Rect(row.x + 300f, row.y + 3f, Mathf.Max(0f, row.width - 304f), row.height - 6f), category.percent / 100f);
         }
 
         EditorGUILayout.Space();
-        EditorGUILayout.LabelField("Top 20 Largest Assets", EditorStyles.boldLabel);
-        int topCount = Mathf.Min(20, _report.files.Count);
-        for (int i = 0; i < topCount; i++)
+        EditorGUILayout.LabelField("Largest Assets", EditorStyles.boldLabel);
+        int count = Mathf.Min(TopCount, _report.files.Count);
+        for (int i = 0; i < count; i++)
         {
-            Rect row = GUILayoutUtility.GetRect(0f, RowHeight, GUILayout.ExpandWidth(true));
-            DrawFileRow(row, i, _report.files[i]);
+            DrawFileRow(GUILayoutUtility.GetRect(0f, RowHeight, GUILayout.ExpandWidth(true)), i, _report.files[i]);
         }
 
         EditorGUILayout.EndScrollView();
@@ -675,18 +563,7 @@ public class BuildReportWindow : EditorWindow
     private void DrawOutputParts()
     {
         EditorGUILayout.Space();
-        EditorGUILayout.LabelField("Output File Contents", EditorStyles.boldLabel);
-        EditorGUILayout.HelpBox(
-            "Asset sizes in this window are uncompressed. Inside the output file they are packed into " +
-            "\"Unity data\" and compressed, so compare that row with the asset totals.",
-            MessageType.None);
-
-        Rect header = GUILayoutUtility.GetRect(0f, RowHeight, GUILayout.ExpandWidth(true));
-        GUI.Label(new Rect(header.x, header.y, 230f, header.height), "Part", EditorStyles.toolbarButton);
-        GUI.Label(new Rect(header.x + 230f, header.y, 90f, header.height), "In file", EditorStyles.toolbarButton);
-        GUI.Label(new Rect(header.x + 320f, header.y, 90f, header.height), "Uncompressed", EditorStyles.toolbarButton);
-        GUI.Label(new Rect(header.x + 410f, header.y, 55f, header.height), "%", EditorStyles.toolbarButton);
-        GUI.Label(new Rect(header.x + 465f, header.y, Mathf.Max(0f, header.width - 465f), header.height), string.Empty, EditorStyles.toolbarButton);
+        EditorGUILayout.LabelField("Inside the Output File", EditorStyles.boldLabel);
 
         double total = Math.Max(1L, _report.outputFileSize);
         for (int i = 0; i < _report.outputParts.Count; i++)
@@ -697,9 +574,8 @@ public class BuildReportWindow : EditorWindow
             DrawRowBackground(row, i, false, false);
             GUI.Label(new Rect(row.x, row.y, 230f, row.height), part.name);
             GUI.Label(new Rect(row.x + 230f, row.y, 90f, row.height), FormatBytes(part.compressed));
-            GUI.Label(new Rect(row.x + 320f, row.y, 90f, row.height), FormatBytes(part.uncompressed));
-            GUI.Label(new Rect(row.x + 410f, row.y, 55f, row.height), FormatPercent(percent));
-            DrawBar(new Rect(row.x + 469f, row.y + 3f, Mathf.Max(0f, row.xMax - row.x - 473f), row.height - 6f), percent / 100f);
+            GUI.Label(new Rect(row.x + 320f, row.y, 55f, row.height), FormatPercent(percent));
+            DrawBar(new Rect(row.x + 380f, row.y + 3f, Mathf.Max(0f, row.width - 384f), row.height - 6f), percent / 100f);
         }
     }
 
@@ -708,8 +584,6 @@ public class BuildReportWindow : EditorWindow
         EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
         EditorGUI.BeginChangeCheck();
         _search = EditorGUILayout.TextField(_search, EditorStyles.toolbarSearchField, GUILayout.MinWidth(150f));
-        _typeIndex = EditorGUILayout.Popup(_typeIndex, _typeOptions, EditorStyles.toolbarPopup, GUILayout.Width(110f));
-        _onlyHeavy = GUILayout.Toggle(_onlyHeavy, "Heavy only", EditorStyles.toolbarButton, GUILayout.Width(80f));
         if (EditorGUI.EndChangeCheck())
         {
             _filesDirty = true;
@@ -719,7 +593,7 @@ public class BuildReportWindow : EditorWindow
             RebuildFileList();
         }
         GUILayout.FlexibleSpace();
-        GUILayout.Label($"{_filteredFiles.Count} assets · {FormatBytes(_filteredBytes)}", EditorStyles.miniLabel);
+        GUILayout.Label($"{_filteredFiles.Count} files · {FormatBytes(_filteredBytes)}", EditorStyles.miniLabel);
         EditorGUILayout.EndHorizontal();
 
         Rect header = GUILayoutUtility.GetRect(0f, RowHeight, GUILayout.ExpandWidth(true));
@@ -728,15 +602,8 @@ public class BuildReportWindow : EditorWindow
         x += 80f;
         GUI.Label(new Rect(x, header.y, 55f, header.height), "%", EditorStyles.toolbarButton);
         x += 55f;
-        DrawSortHeader(new Rect(x, header.y, 80f, header.height), "Ext", FileSort.Extension);
-        x += 80f;
-        DrawSortHeader(new Rect(x, header.y, 120f, header.height), "Asset Type", FileSort.AssetType);
+        DrawSortHeader(new Rect(x, header.y, 120f, header.height), "Type", FileSort.AssetType);
         x += 120f;
-        if (_report.hasSceneInfo)
-        {
-            GUI.Label(new Rect(x, header.y, SceneColumnWidth, header.height), "Scn", EditorStyles.toolbarButton);
-            x += SceneColumnWidth;
-        }
         DrawSortHeader(new Rect(x, header.y, header.xMax - x - SelectButtonWidth, header.height), "Path", FileSort.Path);
         GUI.Label(new Rect(header.xMax - SelectButtonWidth, header.y, SelectButtonWidth, header.height), string.Empty, EditorStyles.toolbarButton);
 
@@ -770,26 +637,11 @@ public class BuildReportWindow : EditorWindow
             query = query.Where(f => f.path.IndexOf(_search, StringComparison.OrdinalIgnoreCase) >= 0
                                      || f.assetType.IndexOf(_search, StringComparison.OrdinalIgnoreCase) >= 0);
         }
-        if (_typeIndex > 0 && _typeIndex < _typeOptions.Length)
-        {
-            string type = _typeOptions[_typeIndex];
-            query = query.Where(f => f.extension == type);
-        }
-        if (_onlyHeavy)
-        {
-            long threshold = ThresholdBytes;
-            query = query.Where(f => f.bytes >= threshold);
-        }
 
         switch (_sort)
         {
             case FileSort.Size:
                 query = _sortAscending ? query.OrderBy(f => f.bytes) : query.OrderByDescending(f => f.bytes);
-                break;
-            case FileSort.Extension:
-                query = _sortAscending
-                    ? query.OrderBy(f => f.extension).ThenByDescending(f => f.bytes)
-                    : query.OrderByDescending(f => f.extension).ThenByDescending(f => f.bytes);
                 break;
             case FileSort.AssetType:
                 query = _sortAscending
@@ -809,21 +661,14 @@ public class BuildReportWindow : EditorWindow
 
     private void DrawFileRow(Rect row, int index, FileEntry file)
     {
-        DrawRowBackground(row, index, file.bytes >= ThresholdBytes, file.path == _selectedPath);
+        DrawRowBackground(row, index, file.bytes >= HeavyThresholdBytes, file.path == _selectedPath);
         float x = row.x;
         GUI.Label(new Rect(x, row.y, 80f, row.height), FormatBytes(file.bytes));
         x += 80f;
         GUI.Label(new Rect(x, row.y, 55f, row.height), FormatPercent(file.percent));
         x += 55f;
-        GUI.Label(new Rect(x, row.y, 80f, row.height), file.extension);
-        x += 80f;
         GUI.Label(new Rect(x, row.y, 120f, row.height), file.assetType);
         x += 120f;
-        if (_report.hasSceneInfo)
-        {
-            GUI.Label(new Rect(x, row.y, SceneColumnWidth, row.height), file.scenes.Length.ToString());
-            x += SceneColumnWidth;
-        }
         GUI.Label(new Rect(x, row.y, row.xMax - x - SelectButtonWidth, row.height), file.path);
         DrawSelectButton(new Rect(row.xMax - SelectButtonWidth + 2f, row.y + 1f, SelectButtonWidth - 4f, row.height - 2f), file.path);
         HandleAssetRowClick(row, file.path);
@@ -833,18 +678,13 @@ public class BuildReportWindow : EditorWindow
     {
         EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
         EditorGUI.BeginChangeCheck();
-        _groupMode = GUILayout.Toolbar(_groupMode, GroupModeNames, EditorStyles.toolbarButton, GUILayout.Width(300f));
-        if (_groupMode == 0)
-        {
-            GUILayout.Label("Depth", EditorStyles.miniLabel, GUILayout.Width(36f));
-            _folderDepth = EditorGUILayout.IntSlider(_folderDepth, 1, 6, GUILayout.Width(160f));
-        }
+        _groupMode = GUILayout.Toolbar(_groupMode, GroupModeNames, EditorStyles.toolbarButton, GUILayout.Width(220f));
         if (EditorGUI.EndChangeCheck())
         {
             _groupsDirty = true;
         }
         GUILayout.FlexibleSpace();
-        GUILayout.Label("Click a group to list its assets", EditorStyles.miniLabel);
+        GUILayout.Label("Click a group to list its files", EditorStyles.miniLabel);
         EditorGUILayout.EndHorizontal();
 
         if (_groupsDirty)
@@ -858,7 +698,7 @@ public class BuildReportWindow : EditorWindow
         Rect header = GUILayoutUtility.GetRect(0f, RowHeight, GUILayout.ExpandWidth(true));
         GUI.Label(new Rect(header.x, header.y, 80f, header.height), "Size", EditorStyles.toolbarButton);
         GUI.Label(new Rect(header.x + 80f, header.y, 55f, header.height), "%", EditorStyles.toolbarButton);
-        GUI.Label(new Rect(header.x + 135f, header.y, 60f, header.height), "Assets", EditorStyles.toolbarButton);
+        GUI.Label(new Rect(header.x + 135f, header.y, 60f, header.height), "Files", EditorStyles.toolbarButton);
         GUI.Label(new Rect(header.x + 195f, header.y, header.width - 195f, header.height), "Group", EditorStyles.toolbarButton);
 
         _groupScroll = DrawVirtualList(_groupScroll, _groups.Count, (row, i) =>
@@ -884,14 +724,7 @@ public class BuildReportWindow : EditorWindow
     private void RebuildGroups()
     {
         _groupsDirty = false;
-        Func<FileEntry, string> keySelector;
-        switch (_groupMode)
-        {
-            case 0: keySelector = f => GetFolderKey(f.path, _folderDepth); break;
-            case 1: keySelector = f => f.extension; break;
-            default: keySelector = f => f.assetType; break;
-        }
-
+        Func<FileEntry, string> keySelector = _groupMode == 0 ? f => GetFolderKey(f.path, FolderDepth) : f => f.assetType;
         _groups = _report.files
             .GroupBy(keySelector)
             .Select(g => new GroupRow { key = g.Key, count = g.Count(), bytes = g.Sum(f => f.bytes) })
@@ -901,21 +734,7 @@ public class BuildReportWindow : EditorWindow
 
     private void OpenGroupInFileList(string key)
     {
-        _search = string.Empty;
-        _typeIndex = 0;
-        switch (_groupMode)
-        {
-            case 0:
-                _search = key.StartsWith("(") ? string.Empty : key + "/";
-                break;
-            case 1:
-                _typeIndex = Mathf.Max(0, Array.IndexOf(_typeOptions, key));
-                break;
-            default:
-                _search = key;
-                break;
-        }
-        _onlyHeavy = false;
+        _search = _groupMode == 0 ? (key.StartsWith("(") ? string.Empty : key + "/") : key;
         _filesDirty = true;
         _tab = 1;
         GUI.FocusControl(null);
