@@ -3,7 +3,7 @@
 <p align="center">
   <strong>Công cụ Unity Editor xem thành phần của bản build gần nhất.</strong>
   <br/>
-  Asset nặng, nhóm file, cấu trúc APK/AAB/IPA và scene nào kéo asset vào build.
+  Asset nặng, nhóm file và cấu trúc APK/AAB/IPA trong một cửa sổ gọn.
 </p>
 
 <p align="center">
@@ -12,7 +12,7 @@
   <img src="https://img.shields.io/badge/Package-com.dann.gamereport-6A5ACD?style=flat-square">
   <img src="https://img.shields.io/badge/Editor-only-2EA44F?style=flat-square">
   <img src="https://img.shields.io/badge/Owner-PocketPlay-FF6B6B?style=flat-square">
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/Changelog-1.0.1-0366D6?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/Changelog-1.0.2-0366D6?style=flat-square"></a>
 </p>
 
 ---
@@ -37,11 +37,13 @@ Package ghi báo cáo ngay sau mỗi lần build rồi hiển thị trong một 
 
 | Tab | Nội dung |
 | --- | --- |
-| **Summary** | Platform, kết quả, thời gian build, kích thước file output, tổng asset, thành phần bên trong APK/AAB/IPA, size theo loại asset, top 20 asset nặng nhất |
-| **Files** | Toàn bộ asset trong build. Tìm theo path hoặc loại asset, lọc theo đuôi file, chỉ hiện file nặng, sort theo size, đuôi, loại, path |
-| **Groups** | Gộp asset theo thư mục (chỉnh độ sâu 1–6), theo đuôi file hoặc theo loại asset. Bấm một nhóm để mở danh sách file của nhóm đó |
+| **Summary** | Platform, thời điểm build xong, kích thước file output, tổng asset và số file, thành phần bên trong APK/AAB/IPA, size theo loại asset, 10 asset nặng nhất |
+| **Files** | Toàn bộ asset trong build. Ô tìm kiếm khớp path hoặc loại asset. Sort theo `Size` (mặc định), `Type` hoặc `Path`. Cột: size, phần trăm, loại, path |
+| **Groups** | Gộp asset theo thư mục (2 cấp đầu của path) hoặc theo loại asset. Bấm một nhóm để mở tab Files đã lọc sẵn theo nhóm đó |
 
-Thanh công cụ có `Refresh`, `Show Report File` và ô **Heavy threshold (KB)**. Asset từ ngưỡng này trở lên được tô đỏ (mặc định 500 KB, lưu trong `EditorPrefs`). Khi project có báo cáo của nhiều platform, thanh công cụ có thêm dropdown chọn platform.
+Thanh công cụ có `Refresh`. Khi project có báo cáo của nhiều platform, thanh công cụ có thêm dropdown chọn platform.
+
+Asset từ 500 KB trở lên được tô đỏ trong mọi danh sách. Ngưỡng này cố định trong code (`HeavyThresholdBytes`).
 
 Thao tác trên một dòng asset:
 
@@ -50,23 +52,6 @@ Thao tác trên một dòng asset:
 | Bấm trái | Ping asset trong Project window và chọn dòng |
 | Bấm đúp hoặc nút `Select` | Chọn asset trong Project |
 | Bấm phải | Menu `Copy Path`, `Select in Project` |
-
-## Scene nào kéo asset vào build
-
-Chọn một dòng asset, panel ở cuối cửa sổ liệt kê tối đa 8 scene tham chiếu asset đó. Tab **Files** có thêm cột `Scn` là số scene tham chiếu.
-
-Dữ liệu này chỉ có khi build bật `BuildOptions.DetailedBuildReport`. Nếu không bật, cột `Scn` ẩn và panel hiện hướng dẫn. Đường dẫn scene hiển thị đúng như Unity trả về, package không tự phân tích chuỗi này.
-
-```csharp
-BuildPlayerOptions options = new BuildPlayerOptions
-{
-    scenes = scenes,
-    locationPathName = path,
-    target = BuildTarget.Android,
-    options = BuildOptions.DetailedBuildReport
-};
-BuildPipeline.BuildPlayer(options);
-```
 
 ## Nơi lưu báo cáo
 
@@ -78,16 +63,16 @@ Package ghi qua `IPostprocessBuildWithReport` với `callbackOrder = int.MaxValu
 
 Build tăng dần (incremental) có thể trả `packedAssets` rỗng. Khi đó package giữ lại danh sách asset của lần build trước cùng platform và hiện cảnh báo vàng ở tab Summary kèm thời điểm của danh sách đó. Số liệu output file (kích thước, thành phần APK/AAB/IPA) vẫn là của lần build mới nhất. Chạy clean build để có danh sách asset đúng của build hiện tại.
 
-Nếu chưa có danh sách nào từ trước, cảnh báo ghi rõ Unity không trả asset nào cho build này.
+Nếu chưa có danh sách nào từ trước, cảnh báo ghi rõ Unity không trả danh sách asset cho build này.
 
 ## Giới hạn
 
-- Kích thước asset do Unity báo là **chưa nén**, khác với kích thước thực trong APK/AAB/IPA. Xem bảng **Output File Contents** ở tab Summary để so sánh với dòng `Unity data`.
+- Kích thước asset do Unity báo là **chưa nén**, khác với kích thước thực trong APK/AAB/IPA. So sánh tổng asset với dòng `Unity data` trong bảng **Inside the Output File** ở tab Summary.
 - Phân tích output chỉ hỗ trợ file `.apk`, `.aab`, `.ipa`. File Zip64 chưa hỗ trợ.
 - File `.cs` bị bỏ qua vì code được biên dịch thành native, entry trong báo cáo chỉ là MonoScript nhỏ. Size code chỉ thấy gộp trong `Native libs` và `Java/Kotlin code`.
 - Chưa đọc riêng bundle Addressables. Kích thước asset nằm trong bundle có thể không xuất hiện ở danh sách asset.
-- Cột `Scn` và panel scene cần `BuildOptions.DetailedBuildReport` như mục trên.
 - Chỉ giữ báo cáo của lần build gần nhất mỗi platform, chưa có so sánh giữa các build.
+- Chưa hiển thị scene nào tham chiếu asset.
 
 ## Cấu trúc
 

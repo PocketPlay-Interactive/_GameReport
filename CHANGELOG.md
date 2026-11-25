@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.2] - 2026-11-25
+
+- Simplified the window: removed the heavy threshold field, the extension filter, the `Ext` and `Scn` columns, the scene detail panel and the group-by-extension mode.
+- Shortened the Summary tab (top 10 assets, fewer build detail rows, one-line warnings).
+- Stopped collecting scene references.
+
 ## [1.0.1] - 2026-11-25
 
 - Added a cache file per platform (`Library/BuildReportWindow/<Platform>.json`) and a platform dropdown.

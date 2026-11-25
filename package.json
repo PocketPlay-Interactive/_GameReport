@@ -1,6 +1,6 @@
 {
   "name": "com.dann.gamereport",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "displayName": "Game Report",
   "description": "Unity Editor tool for inspecting build output, asset sizes, file groups, and APK, AAB, or IPA composition.",
   "unity": "2021.3",
