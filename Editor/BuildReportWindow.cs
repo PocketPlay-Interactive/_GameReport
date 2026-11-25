@@ -43,6 +43,8 @@ public class BuildReportWindow : EditorWindow
         public long outputFileSize = -1;
         public List<OutputPart> outputParts = new List<OutputPart>();
         public long packedTotal;
+        public bool hasSceneInfo;
+        public string assetsBuiltAt; // differs from buildEndedAt when the asset list was carried over from an older build
         public List<CategoryEntry> categories = new List<CategoryEntry>();
         public List<FileEntry> files = new List<FileEntry>();
     }
@@ -72,6 +74,7 @@ public class BuildReportWindow : EditorWindow
         public string extension;
         public string assetType;
         public long largestPart;
+        public string[] scenes = Array.Empty<string>();
     }
 
     private class GroupRow
@@ -84,8 +87,9 @@ public class BuildReportWindow : EditorWindow
     private enum FileSort { Size, Extension, AssetType, Path }
 
     private const int CacheVersion = 1;
+    // One report per platform: Library/BuildReportWindow/<platform>.json
     private const string CacheDirectory = "Library/BuildReportWindow";
-    private const string ReportPath = CacheDirectory + "/latest.json";
+    private const int MaxDetailScenes = 8;
     private const string ThresholdPrefKey = "BuildReportWindow.ThresholdKB";
     private const string AllTypes = "All types";
     private const double AutoRefreshInterval = 2d;
@@ -100,8 +104,13 @@ public class BuildReportWindow : EditorWindow
     private static readonly Color BarFillColor = new Color(0.3f, 0.6f, 1f, 0.8f);
 
     private ReportData _report;
-    private DateTime _reportWriteTime;
     private double _nextAutoRefreshCheck;
+
+    private string _platform;
+    private string[] _platformNames = Array.Empty<string>();
+    private string _newestFile;
+    private DateTime _newestWrite;
+    private FileEntry _detail; // snapshot of the selected asset taken on Layout so IMGUI control counts stay stable
     private string _status;
     private int _tab;
     private float _thresholdKB;
@@ -135,7 +144,7 @@ public class BuildReportWindow : EditorWindow
     public static void Open()
     {
         BuildReportWindow window = GetWindow<BuildReportWindow>("Build Report");
-        window.minSize = new Vector2(640f, 360f);
+        window.minSize = new Vector2(780f, 360f);
         window.Show();
     }
 
@@ -145,55 +154,66 @@ public class BuildReportWindow : EditorWindow
         Refresh();
     }
 
-    // Reload automatically when a completed build updates this project's cache
     private void OnInspectorUpdate()
     {
-        if (EditorApplication.timeSinceStartup < _nextAutoRefreshCheck)
-        {
-            return;
-        }
+        if (EditorApplication.timeSinceStartup < _nextAutoRefreshCheck) return;
         _nextAutoRefreshCheck = EditorApplication.timeSinceStartup + AutoRefreshInterval;
-        if (File.Exists(ReportPath) && File.GetLastWriteTimeUtc(ReportPath) != _reportWriteTime)
+        string newest = GetNewestFile();
+        if (newest != _newestFile || (newest != null && File.GetLastWriteTimeUtc(newest) != _newestWrite))
         {
+            _platform = null; // jump to the platform that was just built
             Refresh();
         }
+    }
+
+    private static string[] GetReportFiles()
+    {
+        return Directory.Exists(CacheDirectory) ? Directory.GetFiles(CacheDirectory, "*.json") : Array.Empty<string>();
+    }
+
+    private static string GetNewestFile()
+    {
+        return GetReportFiles().OrderByDescending(p => File.GetLastWriteTimeUtc(p)).FirstOrDefault();
+    }
+
+    private static string GetReportPath(string platform)
+    {
+        return Path.Combine(CacheDirectory, platform + ".json");
     }
 
     private void Refresh()
     {
         _report = null;
         _status = null;
-        _reportWriteTime = default;
-
-        if (!File.Exists(ReportPath))
+        try
         {
-            _status = "No cached build report found for this project. Build the project first.";
+            _newestFile = GetNewestFile();
+            _newestWrite = _newestFile == null ? default : File.GetLastWriteTimeUtc(_newestFile);
+            _platformNames = GetReportFiles().Select(p => Path.GetFileNameWithoutExtension(p)).OrderBy(p => p).ToArray();
+            if (!_platformNames.Contains(_platform))
+            {
+                _platform = _newestFile == null ? null : Path.GetFileNameWithoutExtension(_newestFile);
+            }
+            if (_platform == null)
+            {
+                _status = "No cached build report found for this project. Build the project first.";
+            }
+            else
+            {
+                _report = LoadReport(GetReportPath(_platform));
+                if (_report == null) _status = "Could not read the build report for " + _platform + ". Build the project again.";
+            }
         }
-        else
+        catch (Exception e)
         {
-            try
-            {
-                _reportWriteTime = File.GetLastWriteTimeUtc(ReportPath);
-                _report = LoadReport(ReportPath);
-                if (_report == null)
-                {
-                    _status = "Could not read BuildReport from " + ReportPath + ".";
-                }
-            }
-            catch (Exception e)
-            {
-                _status = "Failed to read " + ReportPath + ": " + e.Message;
-            }
+            _status = "Failed to read build report: " + e.Message;
         }
 
         if (_report != null)
         {
-            _typeOptions = new[] { AllTypes }
-                .Concat(_report.files.Select(f => f.extension).Distinct().OrderBy(e => e))
-                .ToArray();
+            _typeOptions = new[] { AllTypes }.Concat(_report.files.Select(f => f.extension).Distinct().OrderBy(e => e)).ToArray();
             _typeIndex = Mathf.Clamp(_typeIndex, 0, _typeOptions.Length - 1);
         }
-
         _filesDirty = true;
         _groupsDirty = true;
         Repaint();
@@ -203,6 +223,7 @@ public class BuildReportWindow : EditorWindow
 
     private static ReportData LoadReport(string path)
     {
+        if (!File.Exists(path)) return null;
         CacheData cache = JsonUtility.FromJson<CacheData>(File.ReadAllText(path));
         if (cache == null || cache.version != CacheVersion || cache.report == null)
         {
@@ -220,25 +241,34 @@ public class BuildReportWindow : EditorWindow
         try
         {
             Directory.CreateDirectory(CacheDirectory);
-            CacheData cache = new CacheData
+            string path = GetReportPath(report.summary.platform.ToString());
+            ReportData data = ToReportData(report);
+            data.assetsBuiltAt = data.buildEndedAt;
+
+            // ponytail: reuse the previous list when Unity returns none; obtain a complete current report to replace it.
+            if (data.files.Count == 0)
             {
-                version = CacheVersion,
-                projectPath = GetProjectPath(),
-                report = ToReportData(report)
-            };
-            string tempPath = ReportPath + ".tmp";
+                ReportData previous = null;
+                try { previous = LoadReport(path); } catch (Exception) { }
+                if (previous != null && previous.files.Count > 0)
+                {
+                    data.files = previous.files;
+                    data.categories = previous.categories;
+                    data.packedTotal = previous.packedTotal;
+                    data.hasSceneInfo = previous.hasSceneInfo;
+                    data.assetsBuiltAt = string.IsNullOrEmpty(previous.assetsBuiltAt) ? previous.buildEndedAt : previous.assetsBuiltAt;
+                }
+            }
+
+            CacheData cache = new CacheData { version = CacheVersion, projectPath = GetProjectPath(), report = data };
+            string tempPath = path + ".tmp";
             File.WriteAllText(tempPath, JsonUtility.ToJson(cache));
-            if (File.Exists(ReportPath))
-            {
-                File.Replace(tempPath, ReportPath, null);
-            }
-            else
-            {
-                File.Move(tempPath, ReportPath);
-            }
+            if (File.Exists(path)) File.Delete(path);
+            File.Move(tempPath, path);
 
             foreach (BuildReportWindow window in Resources.FindObjectsOfTypeAll<BuildReportWindow>())
             {
+                window._platform = null;
                 window.Refresh();
             }
         }
@@ -295,6 +325,23 @@ public class BuildReportWindow : EditorWindow
                 {
                     entry.largestPart = size;
                     entry.assetType = typeName;
+                }
+            }
+        }
+
+        // Only filled when the build used BuildOptions.DetailedBuildReport; scenePaths are shown as Unity returns them
+        ScenesUsingAssets[] usage = report.scenesUsingAssets;
+        data.hasSceneInfo = usage != null && usage.Length > 0;
+        if (data.hasSceneInfo)
+        {
+            foreach (ScenesUsingAssets set in usage)
+            {
+                foreach (ScenesUsingAsset item in set.list)
+                {
+                    if (files.TryGetValue(item.assetPath, out FileEntry entry))
+                    {
+                        entry.scenes = item.scenePaths;
+                    }
                 }
             }
         }
@@ -467,6 +514,12 @@ public class BuildReportWindow : EditorWindow
             return;
         }
 
+        // Only change the control set on Layout so Layout and Repaint see the same panel
+        if (Event.current.type == EventType.Layout)
+        {
+            _detail = string.IsNullOrEmpty(_selectedPath) ? null : _report.files.Find(f => f.path == _selectedPath);
+        }
+
         _tab = GUILayout.Toolbar(_tab, TabNames);
         switch (_tab)
         {
@@ -474,18 +527,61 @@ public class BuildReportWindow : EditorWindow
             case 1: DrawFilesTab(); break;
             case 2: DrawGroupTab(); break;
         }
+        if (_detail != null && _tab != 2)
+        {
+            DrawDetail(_detail);
+        }
+    }
+
+    // Why the selected asset is in the build: the scenes that reference it
+    private void DrawDetail(FileEntry file)
+    {
+        EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+        EditorGUILayout.LabelField(file.path, EditorStyles.boldLabel);
+        if (!_report.hasSceneInfo)
+        {
+            EditorGUILayout.LabelField("No scene info in this build. Build with BuildOptions.DetailedBuildReport to see which scenes use an asset.", EditorStyles.wordWrappedMiniLabel);
+        }
+        else if (file.scenes.Length == 0)
+        {
+            EditorGUILayout.LabelField("No scene reference recorded for this asset.", EditorStyles.wordWrappedMiniLabel);
+        }
+        else
+        {
+            EditorGUILayout.LabelField($"Referenced by {file.scenes.Length} scene(s):", EditorStyles.miniLabel);
+            for (int i = 0; i < Mathf.Min(file.scenes.Length, MaxDetailScenes); i++)
+            {
+                EditorGUILayout.LabelField(file.scenes[i], EditorStyles.miniLabel);
+            }
+            if (file.scenes.Length > MaxDetailScenes)
+            {
+                EditorGUILayout.LabelField($"... and {file.scenes.Length - MaxDetailScenes} more", EditorStyles.miniLabel);
+            }
+        }
+        EditorGUILayout.EndVertical();
     }
 
     private void DrawToolbar()
     {
         EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
+        bool reload = false;
         if (GUILayout.Button("Refresh", EditorStyles.toolbarButton, GUILayout.Width(60f)))
         {
-            Refresh();
+            reload = true;
         }
-        if (GUILayout.Button("Show Report File", EditorStyles.toolbarButton, GUILayout.Width(110f)) && File.Exists(ReportPath))
+        if (GUILayout.Button("Show Report File", EditorStyles.toolbarButton, GUILayout.Width(110f)) && _platform != null && File.Exists(GetReportPath(_platform)))
         {
-            EditorUtility.RevealInFinder(ReportPath);
+            EditorUtility.RevealInFinder(GetReportPath(_platform));
+        }
+        if (_platformNames.Length > 1)
+        {
+            EditorGUI.BeginChangeCheck();
+            int platform = EditorGUILayout.Popup(Array.IndexOf(_platformNames, _platform), _platformNames, EditorStyles.toolbarPopup, GUILayout.Width(90f));
+            if (EditorGUI.EndChangeCheck() && platform >= 0)
+            {
+                _platform = _platformNames[platform];
+                reload = true;
+            }
         }
         GUILayout.FlexibleSpace();
         GUILayout.Label("Heavy threshold (KB)", EditorStyles.miniLabel);
@@ -498,7 +594,15 @@ public class BuildReportWindow : EditorWindow
             _filesDirty = true;
         }
         EditorGUILayout.EndHorizontal();
+
+        if (reload)
+        {
+            Refresh();
+            GUIUtility.ExitGUI(); // layout changed mid-OnGUI, restart the pass
+        }
     }
+
+    private float SceneColumnWidth => _report.hasSceneInfo ? 45f : 0f;
 
     private void DrawSummaryTab()
     {
@@ -508,6 +612,21 @@ public class BuildReportWindow : EditorWindow
 
         EditorGUILayout.Space();
         EditorGUILayout.LabelField("Last Build", EditorStyles.boldLabel);
+        if (!string.IsNullOrEmpty(_report.assetsBuiltAt) && _report.assetsBuiltAt != _report.buildEndedAt)
+        {
+            EditorGUILayout.HelpBox(
+                "Unity reported no packed assets for this build (usually an incremental build). " +
+                "The asset list below is from the build finished at " + _report.assetsBuiltAt + ". " +
+                "Run a clean build to refresh it.",
+                MessageType.Warning);
+        }
+        else if (_report.files.Count == 0)
+        {
+            EditorGUILayout.HelpBox(
+                "Unity reported no packed assets for this build (usually an incremental build). " +
+                "Run a clean build to see the asset list.",
+                MessageType.Warning);
+        }
         EditorGUILayout.LabelField("Platform", _report.platform);
         EditorGUILayout.LabelField("Result", _report.result);
         EditorGUILayout.LabelField("Finished at", _report.buildEndedAt);
@@ -613,6 +732,11 @@ public class BuildReportWindow : EditorWindow
         x += 80f;
         DrawSortHeader(new Rect(x, header.y, 120f, header.height), "Asset Type", FileSort.AssetType);
         x += 120f;
+        if (_report.hasSceneInfo)
+        {
+            GUI.Label(new Rect(x, header.y, SceneColumnWidth, header.height), "Scn", EditorStyles.toolbarButton);
+            x += SceneColumnWidth;
+        }
         DrawSortHeader(new Rect(x, header.y, header.xMax - x - SelectButtonWidth, header.height), "Path", FileSort.Path);
         GUI.Label(new Rect(header.xMax - SelectButtonWidth, header.y, SelectButtonWidth, header.height), string.Empty, EditorStyles.toolbarButton);
 
@@ -695,6 +819,11 @@ public class BuildReportWindow : EditorWindow
         x += 80f;
         GUI.Label(new Rect(x, row.y, 120f, row.height), file.assetType);
         x += 120f;
+        if (_report.hasSceneInfo)
+        {
+            GUI.Label(new Rect(x, row.y, SceneColumnWidth, row.height), file.scenes.Length.ToString());
+            x += SceneColumnWidth;
+        }
         GUI.Label(new Rect(x, row.y, row.xMax - x - SelectButtonWidth, row.height), file.path);
         DrawSelectButton(new Rect(row.xMax - SelectButtonWidth + 2f, row.y + 1f, SelectButtonWidth - 4f, row.height - 2f), file.path);
         HandleAssetRowClick(row, file.path);
